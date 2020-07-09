@@ -521,6 +521,76 @@ func (e *Email) Send(addr string, a smtp.Auth) error {
 	return smtp.SendMail(addr, a, sender, to, raw)
 }
 
+// SendCustomTLS is similar to send, except that it allows for a custom TLS configuration (e.g. to skip verifying
+// TLS certificate during STARTTLS negotiation). Note that a ServerName is mandatory in the config.
+func (e *Email) SendCustomTLS(addr string, a smtp.Auth, tlsConfig *tls.Config) error {
+	// Merge the To, Cc, and Bcc fields
+	to := make([]string, 0, len(e.To)+len(e.Cc)+len(e.Bcc))
+	to = append(append(append(to, e.To...), e.Cc...), e.Bcc...)
+	for i := 0; i < len(to); i++ {
+		addr, err := mail.ParseAddress(to[i])
+		if err != nil {
+			return err
+		}
+		to[i] = addr.Address
+	}
+	// Check to make sure there is at least one recipient and one "From" address
+	if e.From == "" || len(to) == 0 {
+		return errors.New("Must specify at least one From address and one To address")
+	}
+	sender, err := e.parseSender()
+	if err != nil {
+		return err
+	}
+	raw, err := e.Bytes()
+	if err != nil {
+		return err
+	}
+
+	c, err := smtp.Dial(addr)
+	if err != nil {
+		return err
+	}
+
+	err = c.StartTLS(tlsConfig)
+	if err != nil {
+		return err
+	}
+
+	// Auth
+	if err = c.Auth(a); err != nil {
+		return err
+	}
+
+	// To && From
+	if err = c.Mail(sender); err != nil {
+		return err
+	}
+	for _, addr := range to {
+		if err = c.Rcpt(addr); err != nil {
+			return err
+		}
+	}
+
+	// Data
+	w, err := c.Data()
+	if err != nil {
+		return err
+	}
+
+	_, err = w.Write(raw)
+	if err != nil {
+		return err
+	}
+
+	err = w.Close()
+	if err != nil {
+		return err
+	}
+
+	return c.Quit()
+}
+
 // Select and parse an SMTP envelope sender address.  Choose Email.Sender if set, or fallback to Email.From.
 func (e *Email) parseSender() (string, error) {
 	if e.Sender != "" {
